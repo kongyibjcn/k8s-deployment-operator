@@ -1,0 +1,15 @@
+apiVersion: deploycontrol.k8s.io/v1
+kind: DeployDaemom
+metadata:
+  name: test-deploydaemon
+spec:
+  component: ts-app
+  image: 9.110.182.145/commerce/ts-app:9.0.1.2
+  version: 9.0.1.2
+  instance: 2
+  expose: online
+  configRef: demoqaauth
+  secrets:
+    - paramName: VAULT_TOKEN
+      secretName: demoqaauth_vaulttoken
+

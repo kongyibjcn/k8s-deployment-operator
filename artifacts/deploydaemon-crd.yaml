@@ -1,0 +1,11 @@
+apiVersion: deploycontrol.k8s.io/v1alpha1
+kind: DeployDaemon
+metadata:
+  name: deploydaemons.deploycontrol.k8s.io
+spec:
+  group: deploycontrol.k8s.io
+  version: v1alpha1
+  names:
+    kind: DeployDaemon
+    plural: deploydaemons
+  scope: Namespaced
