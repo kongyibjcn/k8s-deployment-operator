@@ -1,8 +1,11 @@
-apiVersion: deploycontrol.k8s.io/v1
-kind: DeployDaemom
+apiVersion: deploycontrol.k8s.io/v1alpha1
+kind: DeployDaemon
 metadata:
-  name: test-deploydaemon
+  name: test-deploydaemon-1
 spec:
+  tenant: demo
+  environment: qa
+  envtype: auth
   component: ts-app
   image: 9.110.182.145/commerce/ts-app:9.0.1.2
   version: 9.0.1.2
