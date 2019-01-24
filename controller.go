@@ -271,14 +271,14 @@ func (c *Controller) syncDeployDaemon(deploydaemon *v1alpha1.DeployDaemon, deplo
 
 		//1. Check deployment, if necessary, need to delete old and create a new one
 		if err := c.syncDeployment(deploydaemon, deployment); err != nil {
-			c.remarkSuccessStatus(deploydaemon,false, "Waiting Deployment Ready","123")
+			c.remarkSuccessStatus(deploydaemon,false, "Waiting Deployment Ready", err.Error())
 			return
 		}
 
 		//2. Check pod expose status
 		if err := c.syncPodExposeStatus(deploydaemon); err !=nil{
 			//c.remarkSuccessStatus(deploydaemon,false, "Waiting Pod Expose Sync Ready",err.Error())
-			c.remarkSuccessStatus(deploydaemon,false, "Waiting Pod Expose Sync Ready","456")
+			c.remarkSuccessStatus(deploydaemon,false, "Waiting Pod Expose Sync Ready",err.Error())
 			return
 		}
 
@@ -299,26 +299,14 @@ func ( c *Controller) syncDeployment(deploydaemon *v1alpha1.DeployDaemon, deploy
 	// err = fmt.Errorf("Re-genereate deployment, since significant change on deployment")
 
 	var deploymentUpdated bool = false
-	//
+
 	if *deployment.Spec.Replicas != *deploydaemon.Spec.Replica {
-		klog.Infof("deployment replica is %s", *deployment.Spec.Replicas)
-		klog.Infof("deploydaemon replica is %s", *deployment.Spec.Replicas)
+		klog.Infof("deployment replica %s not sync with deploydaemon replica %s", *deployment.Spec.Replicas, *deploydaemon.Spec.Replica)
 		deployment.Spec.Replicas = deploydaemon.Spec.Replica
 		deploymentUpdated = true
 		c.kubeclientset.AppsV1().Deployments(deploydaemon.Namespace).Update(deployment)
 		err = fmt.Errorf("Waiting Pod Scale Ready")
 	}
-	//
-	//
-	//if deploymentUpdated {
-	//	c.kubeclientset.AppsV1().Deployments(deploydaemon.Namespace).Update(deployment)
-	//	err = fmt.Errorf("Significant Chagne Cause New Deployment")
-	//}else{
-	//	//2. Check deployment ready
-	//	if deployment.Status.AvailableReplicas != deployment.Status.ReadyReplicas {
-	//		err = fmt.Errorf("Waiting Pod Status Ready")
-	//	}
-	//}
 
 	//2. Check deployment ready
 	if ! deploymentUpdated {
