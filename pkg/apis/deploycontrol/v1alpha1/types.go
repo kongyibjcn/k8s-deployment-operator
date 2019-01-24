@@ -91,7 +91,7 @@ type DeploydaemonStatus struct {
 	Conditions ConditionsSpec `json:"conditions,omitempty"`
 
 	// Define Deployment Status
-	Deployment *appsv1.DeploymentStatus `json:"deploymentStatus,omitempty"`
+	Deployment appsv1.DeploymentStatus `json:"deploymentStatus,omitempty"`
 }
 
 type ClusterSpec struct{
@@ -101,11 +101,11 @@ type ClusterSpec struct{
 }
 
 type ConditionsSpec struct{
-	LastUpdateTime metav1.Time `json:"lastupdatetime"`
-	Type           string      `json:"type"`
-	Status         bool      `json:"status"`
-	Reason         string    `json:"reason"`
-	Message        string   `json:"message"`
+	LastUpdateTime metav1.Time `json:"lastupdatetime,omitempty"`
+	Type           string      `json:"type,omitempty"`
+	Status         bool      `json:"status,omitempty"`
+	Reason         string    `json:"reason,omitempty"`
+	Message        string   `json:"message,omitempty"`
 }
 
 

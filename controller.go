@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -62,6 +64,11 @@ type Controller struct {
 }
 
 const controllerAgentName = "deploydaemon-controller"
+
+// Random byte reader used for pod name generation.
+// var for testing.
+var randReader = rand.Reader
+
 
 func MyNewController(name string){
 	fmt.Println("Hello %s", name)
@@ -175,18 +182,20 @@ func (c *Controller) processNextWorkItem() bool {
 		}
 
 		if err := c.reconcile(key); err !=nil {
+			c.workqueue.AddRateLimited(obj)
 			return fmt.Errorf("sync DeployDaemon %s failed: %s", key, err.Error())
 		}
 
 		c.workqueue.Forget(obj)
+		klog.V(1).Infof("Controller move deploydaemon '%s' out from queue", key)
 		klog.Infof("Successfully synced '%s'", key)
+
 		return nil
 	}(obj)
 
 	if err != nil {
 		//utilruntime.HandleError(err)
 		klog.Errorf("Error: %s", err.Error())
-		return true
 	}
     return true
 }
@@ -207,10 +216,7 @@ func (c *Controller ) reconcile(key string) error {
 		return nil
 	}
 
-	// If the build's done, then ignore it.
-	if c.isDone(deploydaemon.Status) {
-		return nil
-	}
+	//TODO: Move isDone to final steps after all check passed. This can cover other parameter changes
 
 	// All obj in index is ready only
 	deploydaemon = deploydaemon.DeepCopy()
@@ -226,27 +232,146 @@ func (c *Controller ) reconcile(key string) error {
          	// Here we need the to fill in the conditionSpec with Reason that the Deployment can not be ceate
          	// then update the deploydaemon status -- this will trigger the update event and make the deploymentdaemon be add into this controller loop again.
 		 }
+         klog.Info("Waiting status for deployment %s ", deploydaemon.Status.Cluster.DeploymentName)
 
 	} else {
 
-		// Else, we need to check deployment status to update deploydaemon status
-		// 检查 deployment 的状态是否是ready的状态
-		// 如果 deployment 不是ready的状态的话就需要把这个deploydaemon再重新加入到 workqueue中，并更新lastUpdateTime
-		// 如果 ready的状态 check 对应的Pod的 expose label是否和 deploydaemon符合，如果不符合就修改
-		dp, err =c.deploymentsLister.Deployments(namespace).Get(deploydaemon.GenerateName)
+		dp, err =c.deploymentsLister.Deployments(namespace).Get(deploydaemon.Status.Cluster.DeploymentName)
 		if err != nil {
-			klog.Errorf("can not get deployment %s in namespace %s", deploydaemon.GenerateName, namespace)
+			return fmt.Errorf("can not get deployment %s in namespace %s", deploydaemon.GenerateName, namespace)
 			// Here we need the to fill in the conditionSpec with Reason that the Deployment can not be get
 			// then we update the deploydaemon
 		}
+		klog.Infof("check deployment %s status : %s", dp.Name,dp.Status)
+	}
+
+	// Else, we need to check deployment status to update deploydaemon status
+	// 检查 deployment 的状态是否是ready的状态
+	// 如果 deployment 不是ready的状态的话就需要把这个deploydaemon再重新加入到 workqueue中，并更新lastUpdateTime
+	// 如果 ready的状态 check 对应的Pod的 expose label是否和 deploydaemon符合，如果不符合就修改
+
+	c.syncDeployDaemon(deploydaemon,dp)
+
+	updateErr := c.updateDeployDaemonStatus(deploydaemon)
+
+	klog.Infof("check deploydaemon after update: \n %s",deploydaemon)
+
+	if sycError:=c.isDone(deploydaemon.Status,updateErr); sycError !=nil {
+		klog.Errorf("sync status of deploydaemon %s", deploydaemon.Name)
+		return sycError
+	}
+	return nil
+}
+
+func (c *Controller) syncDeployDaemon(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) {
+	klog.Infof("sync deployDaemon status for %s: ", deploydaemon.Name)
+
+	if deployment !=nil {
+		deploydaemon.Status.Deployment = deployment.Status
+
+		//1. Check deployment, if necessary, need to delete old and create a new one
+		if err := c.syncDeployment(deploydaemon, deployment); err != nil {
+			c.remarkSuccessStatus(deploydaemon,false, "Waiting Deployment Ready","123")
+			return
+		}
+
+		//2. Check pod expose status
+		if err := c.syncPodExposeStatus(deploydaemon); err !=nil{
+			//c.remarkSuccessStatus(deploydaemon,false, "Waiting Pod Expose Sync Ready",err.Error())
+			c.remarkSuccessStatus(deploydaemon,false, "Waiting Pod Expose Sync Ready","456")
+			return
+		}
+
+		//3. If everything ready, we can mark the DeployDaemon is ready, otherwise, mark is not ready
+		c.remarkSuccessStatus(deploydaemon,true, "All Status Synced","Deployment success!")
+	}else{
+		klog.Infof("deployment %s status is nil, waiting check in next around %s: ", deployment.Name)
+	}
+}
+
+func ( c *Controller) syncDeployment(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) error {
+	klog.Infof("sync deployment status for %s: ", deploydaemon.Name)
+	var err error = nil
+
+	//1. Check replica / image / version change and call createDeployment
+	// delete deployment first
+	// call createDeployment method
+	// err = fmt.Errorf("Re-genereate deployment, since significant change on deployment")
+
+	var deploymentUpdated bool = false
+	//
+	if *deployment.Spec.Replicas != *deploydaemon.Spec.Replica {
+		klog.Infof("deployment replica is %s", *deployment.Spec.Replicas)
+		klog.Infof("deploydaemon replica is %s", *deployment.Spec.Replicas)
+		deployment.Spec.Replicas = deploydaemon.Spec.Replica
+		deploymentUpdated = true
+		c.kubeclientset.AppsV1().Deployments(deploydaemon.Namespace).Update(deployment)
+		err = fmt.Errorf("Waiting Pod Scale Ready")
+	}
+	//
+	//
+	//if deploymentUpdated {
+	//	c.kubeclientset.AppsV1().Deployments(deploydaemon.Namespace).Update(deployment)
+	//	err = fmt.Errorf("Significant Chagne Cause New Deployment")
+	//}else{
+	//	//2. Check deployment ready
+	//	if deployment.Status.AvailableReplicas != deployment.Status.ReadyReplicas {
+	//		err = fmt.Errorf("Waiting Pod Status Ready")
+	//	}
+	//}
+
+	//2. Check deployment ready
+	if ! deploymentUpdated {
+		if deployment.Status.AvailableReplicas != deployment.Status.ReadyReplicas {
+			err = fmt.Errorf("Waiting Pod Status Ready")
+		}
+	}
+
+	return err
+}
+
+
+func ( c *Controller) syncPodExposeStatus(deploydaemon *v1alpha1.DeployDaemon) error {
+
+	klog.Infof("Sync PodExposeStatus for deploydaemon: %s", deploydaemon.Name)
+
+	selector := labels.SelectorFromSet(map[string]string{
+		"app": deploydaemon.GetDeploymentName(),
+		"version": deploydaemon.Spec.Version,
+	})
+
+	podlist, err:= c.podslister.Pods(deploydaemon.Namespace).List(selector)
+
+	completeSync := true
+
+	if err !=nil {
+		klog.Errorf("list pod for deployment %s with version failed", deploydaemon.GetDeploymentName())
+		return err
+	}
+	for _, pod := range podlist  {
+
+		if pod.Labels["expose"] != deploydaemon.Spec.Expose {
+			klog.Infof("Sync Pod %s Expose To %s Caused By DeployDaemon %s Expose Change ", pod.Name,deploydaemon.Spec.Expose,deploydaemon.Name )
+			pod.Labels["expose"]=deploydaemon.Spec.Expose
+			_, err =c.kubeclientset.CoreV1().Pods(deploydaemon.Namespace).Update(pod)
+			if err !=nil {
+				klog.Errorf("Sync Pod %s Expose To %s Failed", pod.Name, deploydaemon.Spec.Expose)
+			}
+		}
+	}
+
+	if ! completeSync {
 
 	}
 
-	c.updateDeployDaemonStatus(deploydaemon, dp)
+	return err
+}
 
-	klog.Infof("Check object info: .........")
-	klog.Info(deploydaemon)
-	return nil
+func (c *Controller) remarkSuccessStatus(deploydaemon *v1alpha1.DeployDaemon, status bool, reason, message string) {
+
+	deploydaemon.Status.Conditions.Status = status
+	deploydaemon.Status.Conditions.Reason = reason
+	deploydaemon.Status.Conditions.Message = message
 }
 
 
@@ -260,60 +385,119 @@ func ( c *Controller) enqueueDeployDaemon(obj interface{}){
 	c.workqueue.AddRateLimited(key)
 }
 
-func ( c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) error {
-
-	klog.Infof("updateDeployDaemonStatus for deploydaemon %s: ", deploydaemon.Name)
-
-	return nil
+func ( c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDaemon) error {
+	_, err := c.extclientset.DeploycontrolV1alpha1().DeployDaemons(deploydaemon.Namespace).Update(deploydaemon)
+	return err
 }
+
+//func ( c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) error {
+//
+//	klog.Infof("updateDeployDaemonStatus for deploydaemon %s: ", deploydaemon.Name)
+//
+//	if deployment !=nil {
+//
+//		deploydaemon.Status.Deployment = deployment.Status
+//
+//		// First check the current deployment replica / image / version -- if anyone of them different, that means the we need to delete current deployment and create a new one
+//		// If any condition above matched, that means, we need to delete deployment and create a new one.
+//		// Below change will need to delete deployment and create a new one
+//		// TODO: Check if docker image changed, need to remove the deployment and create new one by call createDeployent method
+//		if err := c.syncDeployment(deploydaemon, deployment); err != nil {
+//			// createDeployent
+//			return err
+//		}
+//
+//		if deployment.Status.AvailableReplicas == deployment.Status.ReadyReplicas {
+//			deploydaemon.Status.Conditions.Reason = "Waiting Pod Expose status sync"
+//			deploydaemon.Status.Conditions.Message = "Deployment success!"
+//		}else{
+//
+//			//updateDeployment -- it will call update deploydaemon status and update deployment
+//			return fmt.Errorf("Waiting Pod Ready")
+//		}
+//
+//	    // Second check expose service when deployment finish, if not match, we need to sync the expose status.
+//	    if deploydaemon.Status.Conditions.Reason == "Waiting Pod Expose status sync"{
+//			if err :=c.syncPodExposeStatus(deploydaemon); err !=nil {
+//				deploydaemon.Status.Conditions.Message = fmt.Sprintf("Pod Sync Expose Failed: %s",err.Error())
+//				klog.Errorf("Pod Sync For DeployDaemon %s faild",deploydaemon.Name)
+//				// Here Need to Update DeployDamon Status
+//				return err
+//			}else {
+//				deploydaemon.Status.Conditions.Reason = "All Status Synced"
+//				deploydaemon.Status.Conditions.Status = true
+//				deploydaemon.Status.Conditions.Message = "Deployment success!"
+//			}
+//		}
+//	}
+//
+//	_, err :=c.extclientset.DeploycontrolV1alpha1().DeployDaemons(deploydaemon.Namespace).Update(deploydaemon)
+//
+//	return err
+//}
+
+//func (c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) error{
+//
+//	 syncErr :=c.syncDeployDaemonStatus(deploydaemon, deployment)
+//
+//	 if syncErr != nil {
+//		 deploydaemon.Status.Conditions.Message = syncErr.Error()
+//
+//		 if err !=nil {
+//		 	klog.Errorf("Update DeployDaemon Status failed %s", err)
+//		 }
+//	 }
+//
+//	return syncErr
+//}
+
+
+
+
 
 func ( c *Controller ) createDeployent(deploydaemon *v1alpha1.DeployDaemon) (*appsv1.Deployment, error) {
 
 	dp ,err := c.makeDeployment(deploydaemon)
+	klog.Infof("deployment template is %s: ", dp)
 	if err !=nil {
 		klog.Errorf("Faile to create deployment: %s", err.Error())
 	}
 
-	klog.Infof("createDeployent for deploydaemon %s: ", deploydaemon.Name)
+	klog.Infof("create deployment %s for deploydaemon %s: ", deploydaemon.GetDeploymentName()+"-"+deploydaemon.Spec.Version,deploydaemon.Name)
 
-	return c.kubeclientset.AppsV1().Deployments(deploydaemon.Namespace).Create(dp)
+	deploydaemon.Status.Conditions = v1alpha1.ConditionsSpec{
+		Type: "Successful",
+		Status: false,
+		Reason: "Waiting deployment ready",
+		Message: "Waiting deployment ready",
+
+	}
+
+	return c.kubeclientset.AppsV1().Deployments(deploydaemon.ObjectMeta.Namespace).Create(dp)
 }
 
 func (c *Controller ) makeDeployment(deploydaemon *v1alpha1.DeployDaemon) (*appsv1.Deployment, error){
 	klog.Infof("make deployment for deploydaemon: %s", deploydaemon.Name)
-	//&corev1.Deployment{
-	//	ObjectMeta: metav1.ObjectMeta{
-	//		// We execute the build's pod in the same namespace as where the build was
-	//		// created so that it can access colocated resources.
-	//		Namespace: deploydaemon.Namespace,
-	//		// Generate a unique name based on the build's name.
-	//		// Add a unique suffix to avoid confusion when a build
-	//		// is deleted and re-created with the same name.
-	//		// We don't use GenerateName here because k8s fakes don't support it.
-	//		Name: deploydaemon.GetDeploymentName(),
-	//		// If our parent Build is deleted, then we should be as well.
-	//		OwnerReferences: []metav1.OwnerReference{
-	//			*metav1.NewControllerRef(deploydaemon, schema.GroupVersionKind{
-	//				Group:   v1alpha1.SchemeGroupVersion.Group,
-	//				Version: v1alpha1.SchemeGroupVersion.Version,
-	//				Kind:    "DeployDaemon",
-	//			}),
-	//		},
-	//		Labels: map[string]string{
-	//			"expose": deploydaemon.Spec.Expose,
-	//			"app": deploydaemon.GetDeploymentName(),
-	//		},
-	//	},
-	//	Spec: corev1.PodSpec{
-	//		// If the build fails, don't restart it.
-	//		RestartPolicy:  corev1.RestartPolicyNever,
-	//
-	//		Containers: []corev1.Container{{
-	//			Name:  "Nginx-Deployment",
-	//			Image: "docker.io/nginx:latest",
-	//		}},
-	//	},
-	//}, nil
+
+	// Here need to update deploydaemon status.cluster to store the deployment name
+
+	//// Generate a short random hex string.
+	//b, err := ioutil.ReadAll(io.LimitReader(randReader, 3))
+	//if err != nil {
+	//	return nil, err
+	//}
+	//gibberish := hex.EncodeToString(b)
+
+	deploydaemon.Status = &v1alpha1.DeploydaemonStatus{
+		Cluster: &v1alpha1.ClusterSpec{
+                Name: deploydaemon.Name,
+                NameSpace: deploydaemon.Namespace,
+                DeploymentName: deploydaemon.GetDeploymentName()+"-"+deploydaemon.Spec.Version,
+		},
+	}
+
+	klog.Infof("new deployment name is : %s", deploydaemon.Status.Cluster.DeploymentName)
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 					// We execute the build's pod in the same namespace as where the build was
@@ -323,7 +507,7 @@ func (c *Controller ) makeDeployment(deploydaemon *v1alpha1.DeployDaemon) (*apps
 					// Add a unique suffix to avoid confusion when a build
 					// is deleted and re-created with the same name.
 					// We don't use GenerateName here because k8s fakes don't support it.
-					Name: deploydaemon.GetDeploymentName(),
+					Name: deploydaemon.Status.Cluster.DeploymentName,
 					// If our parent Build is deleted, then we should be as well.
 					OwnerReferences: []metav1.OwnerReference{
 						*metav1.NewControllerRef(deploydaemon, schema.GroupVersionKind{
@@ -333,23 +517,24 @@ func (c *Controller ) makeDeployment(deploydaemon *v1alpha1.DeployDaemon) (*apps
 						}),
 					},
 					Labels: map[string]string{
-						"expose": deploydaemon.Spec.Expose,
 						"app": deploydaemon.GetDeploymentName(),
+						"version": deploydaemon.Spec.Version,
 					},
 				},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: deploydaemon.Spec.Replica,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"expose": deploydaemon.Spec.Expose,
 					"app": deploydaemon.GetDeploymentName(),
+					"version": deploydaemon.Spec.Version,
 				},
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"expose": deploydaemon.Spec.Expose,
 						"app": deploydaemon.GetDeploymentName(),
+						"version": deploydaemon.Spec.Version,
+						"expose": deploydaemon.Spec.Expose,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -365,10 +550,11 @@ func (c *Controller ) makeDeployment(deploydaemon *v1alpha1.DeployDaemon) (*apps
 	},nil
 }
 
-func ( c *Controller ) isDone(status *v1alpha1.DeploydaemonStatus) bool {
+func ( c *Controller ) isDone(status *v1alpha1.DeploydaemonStatus, err error) error {
 	// judge is deploydaemon is done
-	if status == nil || status.Conditions.Status == false {
-		return false
+
+	if status == nil || status.Conditions.Status == false || err !=nil {
+		return fmt.Errorf("Sync is ongoing!")
 	}
-	return true
+	return nil
 }

@@ -1,16 +1,16 @@
 apiVersion: deploycontrol.k8s.io/v1alpha1
 kind: DeployDaemon
 metadata:
-  name: test-deploydaemon
+  name: test-deploydaemon-1
 spec:
   tenant: demo
   environment: qa
   envtype: auth
   component: ts-app
   image: nginx:latest
-  version: 9.0.1.2
-  instance: 1
-  expose: online
+  version: 9.0.1.3
+  instance: 2
+  expose: offline
   configRef: demoqaauth
   secrets:
     - paramName: VAULT_TOKEN
