@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	utils "github.com/kongyi-ibm/k8s-deployment-operator/pkg/utilities"
 	"k8s.io/klog"
 	"time"
 
@@ -57,7 +58,10 @@ type Controller struct {
 	// means we can ensure we only process a fixed amount of resources at a
 	// time, and makes it easy to ensure we are never processing the same item
 	// simultaneously in two different workers.
-	workqueue workqueue.RateLimitingInterface
+
+	// Use self-defined DelayWithRateLimiteQueue which support self-defined delay time. if not specify, will use ratelimite delay time.
+	workqueue *utils.DelayWithRateLimitQueue
+
 	// recorder is an event recorder for recording Event resources to the
 	// Kubernetes API.
 	recorder record.EventRecorder
@@ -68,11 +72,6 @@ const controllerAgentName = "deploydaemon-controller"
 // Random byte reader used for pod name generation.
 // var for testing.
 var randReader = rand.Reader
-
-
-func MyNewController(name string){
-	fmt.Println("Hello %s", name)
-}
 
 func NewController(
 	   kubeclientset kubernetes.Interface,
@@ -101,7 +100,8 @@ func NewController(
 		    podsSynced:          podInformer.Informer().HasSynced,
 		    deploydaemonLister:  deploydaemonInformer.Lister(),
 		    deploydaemonSynced:  deploydaemonInformer.Informer().HasSynced,
-            workqueue:           workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "DeployDaemons"),
+            workqueue:           utils.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "DeployDaemons"),
+		    //delayqueue:          workqueue.NewNamedDelayingQueue("DelyQueue"),
             recorder:            recorder,
     }
 
@@ -141,6 +141,9 @@ func ( c *Controller ) Run(threadiness int, stopCh <-chan struct{}) error {
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
+
+	//klog.Info("Starting delay workers")
+	//go wait.Until(c.runDeployWorker,time.Second,stopCh)
 
 	klog.Info("Started workers")
 	<-stopCh
@@ -222,6 +225,14 @@ func (c *Controller ) reconcile(key string) error {
 	deploydaemon = deploydaemon.DeepCopy()
 
 	var dp *appsv1.Deployment
+
+	////Don't need to handle this, when decided to add the object in workqueue.
+	//
+	// TODO:  Here we need to add logic to check if this deploydaemon has set scheduler, if yes, if the scehduler time is after current time, it must be added into deployqueue
+	if deploydaemon.Spec.Scheduler != "" {
+		klog.Info("Remove scheduler when deploydaemon be handled as duration")
+		deploydaemon.Spec.Scheduler = ""
+	}
 
 	// If below status is empty, that means haven't create deployment.
 	if deploydaemon.Status == nil || deploydaemon.Status.Cluster.DeploymentName == "" {
@@ -370,7 +381,32 @@ func ( c *Controller) enqueueDeployDaemon(obj interface{}){
 		utilruntime.HandleError(err)
 		return
 	}
-	c.workqueue.AddRateLimited(key)
+
+	//check if the scheduler exist, if yes, add to AddDelayDefined(item interface{})
+	// Convert the namespace/name string into a distinct namespace and name
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		klog.Errorf("invalid resource key: %s", key)
+	}
+
+	deploydaemon, err:=c.deploydaemonLister.DeployDaemons(namespace).Get(name)
+	if err != nil {
+		klog.Errorf("get crd object %s failed", key)
+	}
+
+	if deploydaemon.Spec.Scheduler != "" {
+		klog.Infof("get deploydaemon duration %s", deploydaemon.Spec.Scheduler )
+
+		durationT,err := time.ParseDuration(deploydaemon.Spec.Scheduler)
+		if err !=nil {
+			klog.Errorf("Parse deploydaemon duration failed!")
+		}
+		klog.Infof("deploydaemon duration is %s ", durationT.String())
+		c.workqueue.AddDelayDefined(key,durationT)
+
+	}else {
+		c.workqueue.AddRateLimited(key)
+	}
 }
 
 func ( c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDaemon) error {
@@ -438,10 +474,6 @@ func ( c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDae
 //
 //	return syncErr
 //}
-
-
-
-
 
 func ( c *Controller ) createDeployent(deploydaemon *v1alpha1.DeployDaemon) (*appsv1.Deployment, error) {
 

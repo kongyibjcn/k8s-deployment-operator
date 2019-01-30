@@ -2,8 +2,8 @@ package v1alpha1
 
 import (
 	"fmt"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // +genclient
@@ -59,6 +59,7 @@ type DeploydaemonSpec struct {
 	Tenant string `json:"tenant"`
 	Environment string `json:"environment"`
 	EnvType   string   `json:"envtype"`
+	Scheduler string `json:"scheduler,omitempty"`
     Image     string  `json:"image"`
 	Version   string `json:"version"`
 	Config    string `json:"configRef"`
