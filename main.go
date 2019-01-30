@@ -22,7 +22,7 @@ func main() {
 	//TODO:  make those paramter as the input parameter for Debug flag
 	flag.Set("alsologtostderr", "true")
 	flag.Set("log_dir", "/tmp")
-	flag.Set("v", "4")
+	flag.Set("v", "1")
 
 	flag.Parse()
 
@@ -55,13 +55,6 @@ func main() {
 	extInformerFactory := extInformers.NewSharedInformerFactory(extClient, time.Second*30)
 
 
-	//NewController(
-	//	kubeclientset kubernetes.Interface,
-	//	extclientset clientset.Interface,
-	//	deploymentInformer appsinformer.DeploymentInformer,
-	//	podInformer corev1informer.PodInformer,
-	//	deploydaemonInformer deploycontrinformer.DeployDaemonInformer) *Controller
-
 	controller := NewController(kubeClient, extClient,
 		kubeInformerFactory.Apps().V1().Deployments(),
 		kubeInformerFactory.Core().V1().Pods(),
@@ -71,7 +64,7 @@ func main() {
 	kubeInformerFactory.Start(stopCh)
 	extInformerFactory.Start(stopCh)
 
-	if err = controller.Run(2, stopCh); err != nil {
+	if err = controller.Run(1, stopCh); err != nil {
 		klog.Fatalf("Error running controller: %s", err.Error())
 	}
 

@@ -33,6 +33,7 @@ import (
 	"github.com/kongyi-ibm/k8s-deployment-operator/pkg/apis/deploycontrol/v1alpha1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	contrerror "github.com/kongyi-ibm/k8s-deployment-operator/pkg/errors"
 )
 
 type Controller struct {
@@ -60,7 +61,10 @@ type Controller struct {
 	// simultaneously in two different workers.
 
 	// Use self-defined DelayWithRateLimiteQueue which support self-defined delay time. if not specify, will use ratelimite delay time.
-	workqueue *utils.DelayWithRateLimitQueue
+	workqueue workqueue.RateLimitingInterface
+
+	// Store item which has set the scheduler
+	delayqueue workqueue.DelayingInterface
 
 	// recorder is an event recorder for recording Event resources to the
 	// Kubernetes API.
@@ -101,7 +105,7 @@ func NewController(
 		    deploydaemonLister:  deploydaemonInformer.Lister(),
 		    deploydaemonSynced:  deploydaemonInformer.Informer().HasSynced,
             workqueue:           utils.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "DeployDaemons"),
-		    //delayqueue:          workqueue.NewNamedDelayingQueue("DelyQueue"),
+		    delayqueue:          workqueue.NewNamedDelayingQueue("DelayQueue"),
             recorder:            recorder,
     }
 
@@ -142,8 +146,9 @@ func ( c *Controller ) Run(threadiness int, stopCh <-chan struct{}) error {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
 
-	//klog.Info("Starting delay workers")
-	//go wait.Until(c.runDeployWorker,time.Second,stopCh)
+	// Just need only one delay worker
+	klog.Info("Starting delay workers")
+	go wait.Until(c.runDeplayWorker,time.Second,stopCh)
 
 	klog.Info("Started workers")
 	<-stopCh
@@ -158,6 +163,47 @@ func ( c *Controller ) Run(threadiness int, stopCh <-chan struct{}) error {
 func (c *Controller) runWorker() {
 	for c.processNextWorkItem() {
 	}
+}
+
+// This worker is special for deplayqueue
+func (c *Controller) runDeplayWorker(){
+	for c.processNextDelayItem(){
+	}
+}
+
+// This is the process function to handle the item which can be pop out from delay queue -- that means the scheduler is after current time.
+func ( c *Controller) processNextDelayItem() bool {
+
+	obj, shutdown :=c.delayqueue.Get()
+
+	if shutdown {
+		return false
+	}
+
+	klog.Infof("deploydaemon %s arrived the time schedule and add into workerqueue", obj.(string))
+
+	// Convert the namespace/name string into a distinct namespace and name
+	namespace, name, err := cache.SplitMetaNamespaceKey(obj.(string))
+
+	deploydaemon, err:=c.deploydaemonLister.DeployDaemons(namespace).Get(name)
+	if err != nil {
+		klog.Errorf("get deploydaemon from cache lister %s failed", obj)
+	}
+
+	deploydaemon.Spec.Scheduler = ""
+
+	deploydaemon.Status.Conditions = v1alpha1.ConditionsSpec{
+		Type: "Successful",
+		Status: false,
+		Reason: "Waiting DeployDamon Run",
+		Message: "Scheduler Ready",
+	}
+
+	_, err = c.extclientset.DeploycontrolV1alpha1().DeployDaemons(namespace).Update(deploydaemon)
+	if err !=nil {
+        klog.Errorf("update deploydaemon %s by remove scheduler failed: %s", obj, err.Error())
+	}
+	return true
 }
 
 // processNextWorkItem will read a single work item off the workqueue and
@@ -185,12 +231,18 @@ func (c *Controller) processNextWorkItem() bool {
 		}
 
 		if err := c.reconcile(key); err !=nil {
-			c.workqueue.AddRateLimited(obj)
-			return fmt.Errorf("sync DeployDaemon %s failed: %s", key, err.Error())
+
+			// If is DelayError type, don't need to output the error log and don't need to output Successfully synced log
+			if _ ,ok := err.(contrerror.DelayError); !ok {
+				c.workqueue.AddRateLimited(obj)
+				return fmt.Errorf("sync DeployDaemon %s failed: %s", key, err.Error())
+			}else{
+				return nil
+			}
 		}
 
 		c.workqueue.Forget(obj)
-		klog.V(1).Infof("Controller move deploydaemon '%s' out from queue", key)
+		klog.V(4).Infof("Controller move deploydaemon '%s' out from queue", key)
 		klog.Infof("Successfully synced '%s'", key)
 
 		return nil
@@ -219,20 +271,39 @@ func (c *Controller ) reconcile(key string) error {
 		return nil
 	}
 
-	//TODO: Move isDone to final steps after all check passed. This can cover other parameter changes
-
 	// All obj in index is ready only
 	deploydaemon = deploydaemon.DeepCopy()
 
-	var dp *appsv1.Deployment
-
-	////Don't need to handle this, when decided to add the object in workqueue.
-	//
-	// TODO:  Here we need to add logic to check if this deploydaemon has set scheduler, if yes, if the scehduler time is after current time, it must be added into deployqueue
+	//TODO: Check if the object set scheduler, if yes, need add into delay queue first and update the deploydaemon status to mark it is waiting for scheduler ready
 	if deploydaemon.Spec.Scheduler != "" {
-		klog.Info("Remove scheduler when deploydaemon be handled as duration")
-		deploydaemon.Spec.Scheduler = ""
+		klog.V(4).Infof("object %s has scheduler need add into delay queue", key)
+		durationT,err := time.ParseDuration(deploydaemon.Spec.Scheduler)
+		if err !=nil {
+
+		}
+
+		deploydaemon.Status.Conditions = v1alpha1.ConditionsSpec{
+			Type: "Successful",
+			Status: false,
+			Reason: "Waiting time scheduler ready",
+			Message: "DeployDaemon will be handler after time scheduler",
+		}
+		//TODO: Here we need to update the deploydaemon status to show it is waiting for scheduler
+
+		err =c.updateDeployDaemonStatus(deploydaemon)
+		if err !=nil {
+			klog.Errorf("update deploydaemon %s status for waiting scheduler failed")
+		}
+
+		c.delayqueue.AddAfter(key,durationT)
+
+		return contrerror.DelayError{
+			         Format: "Add deploydaemon %s into delay queue",
+			         Message: key,
+		       }
 	}
+
+	var dp *appsv1.Deployment
 
 	// If below status is empty, that means haven't create deployment.
 	if deploydaemon.Status == nil || deploydaemon.Status.Cluster.DeploymentName == "" {
@@ -253,19 +324,14 @@ func (c *Controller ) reconcile(key string) error {
 			// Here we need the to fill in the conditionSpec with Reason that the Deployment can not be get
 			// then we update the deploydaemon
 		}
-		klog.Infof("check deployment %s status : %s", dp.Name,dp.Status)
+		klog.V(4).Infof("check deployment %s status : %s", dp.Name,dp.Status)
 	}
-
-	// Else, we need to check deployment status to update deploydaemon status
-	// 检查 deployment 的状态是否是ready的状态
-	// 如果 deployment 不是ready的状态的话就需要把这个deploydaemon再重新加入到 workqueue中，并更新lastUpdateTime
-	// 如果 ready的状态 check 对应的Pod的 expose label是否和 deploydaemon符合，如果不符合就修改
 
 	c.syncDeployDaemon(deploydaemon,dp)
 
 	updateErr := c.updateDeployDaemonStatus(deploydaemon)
 
-	klog.Infof("check deploydaemon after update: \n %s",deploydaemon)
+	klog.V(4).Infof("check deploydaemon after update: \n %s",deploydaemon)
 
 	if sycError:=c.isDone(deploydaemon.Status,updateErr); sycError !=nil {
 		klog.Errorf("sync status of deploydaemon %s", deploydaemon.Name)
@@ -275,9 +341,11 @@ func (c *Controller ) reconcile(key string) error {
 }
 
 func (c *Controller) syncDeployDaemon(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) {
-	klog.Infof("sync deployDaemon status for %s: ", deploydaemon.Name)
+	klog.V(2).Infof("sync deployDaemon status for %s", deploydaemon.Name)
 
 	if deployment !=nil {
+
+
 		deploydaemon.Status.Deployment = deployment.Status
 
 		//1. Check deployment, if necessary, need to delete old and create a new one
@@ -301,7 +369,7 @@ func (c *Controller) syncDeployDaemon(deploydaemon *v1alpha1.DeployDaemon, deplo
 }
 
 func ( c *Controller) syncDeployment(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) error {
-	klog.Infof("sync deployment status for %s: ", deploydaemon.Name)
+	klog.V(2).Infof("sync deployment status for %s: ", deploydaemon.Name)
 	var err error = nil
 
 	//1. Check replica / image / version change and call createDeployment
@@ -332,7 +400,7 @@ func ( c *Controller) syncDeployment(deploydaemon *v1alpha1.DeployDaemon, deploy
 
 func ( c *Controller) syncPodExposeStatus(deploydaemon *v1alpha1.DeployDaemon) error {
 
-	klog.Infof("Sync PodExposeStatus for deploydaemon: %s", deploydaemon.Name)
+	klog.V(2).Infof("Sync PodExposeStatus for deploydaemon: %s", deploydaemon.Name)
 
 	selector := labels.SelectorFromSet(map[string]string{
 		"app": deploydaemon.GetDeploymentName(),
@@ -382,98 +450,13 @@ func ( c *Controller) enqueueDeployDaemon(obj interface{}){
 		return
 	}
 
-	//check if the scheduler exist, if yes, add to AddDelayDefined(item interface{})
-	// Convert the namespace/name string into a distinct namespace and name
-	namespace, name, err := cache.SplitMetaNamespaceKey(key)
-	if err != nil {
-		klog.Errorf("invalid resource key: %s", key)
-	}
-
-	deploydaemon, err:=c.deploydaemonLister.DeployDaemons(namespace).Get(name)
-	if err != nil {
-		klog.Errorf("get crd object %s failed", key)
-	}
-
-	if deploydaemon.Spec.Scheduler != "" {
-		klog.Infof("get deploydaemon duration %s", deploydaemon.Spec.Scheduler )
-
-		durationT,err := time.ParseDuration(deploydaemon.Spec.Scheduler)
-		if err !=nil {
-			klog.Errorf("Parse deploydaemon duration failed!")
-		}
-		klog.Infof("deploydaemon duration is %s ", durationT.String())
-		c.workqueue.AddDelayDefined(key,durationT)
-
-	}else {
-		c.workqueue.AddRateLimited(key)
-	}
+	c.workqueue.AddRateLimited(key)
 }
 
 func ( c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDaemon) error {
 	_, err := c.extclientset.DeploycontrolV1alpha1().DeployDaemons(deploydaemon.Namespace).Update(deploydaemon)
 	return err
 }
-
-//func ( c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) error {
-//
-//	klog.Infof("updateDeployDaemonStatus for deploydaemon %s: ", deploydaemon.Name)
-//
-//	if deployment !=nil {
-//
-//		deploydaemon.Status.Deployment = deployment.Status
-//
-//		// First check the current deployment replica / image / version -- if anyone of them different, that means the we need to delete current deployment and create a new one
-//		// If any condition above matched, that means, we need to delete deployment and create a new one.
-//		// Below change will need to delete deployment and create a new one
-//		// TODO: Check if docker image changed, need to remove the deployment and create new one by call createDeployent method
-//		if err := c.syncDeployment(deploydaemon, deployment); err != nil {
-//			// createDeployent
-//			return err
-//		}
-//
-//		if deployment.Status.AvailableReplicas == deployment.Status.ReadyReplicas {
-//			deploydaemon.Status.Conditions.Reason = "Waiting Pod Expose status sync"
-//			deploydaemon.Status.Conditions.Message = "Deployment success!"
-//		}else{
-//
-//			//updateDeployment -- it will call update deploydaemon status and update deployment
-//			return fmt.Errorf("Waiting Pod Ready")
-//		}
-//
-//	    // Second check expose service when deployment finish, if not match, we need to sync the expose status.
-//	    if deploydaemon.Status.Conditions.Reason == "Waiting Pod Expose status sync"{
-//			if err :=c.syncPodExposeStatus(deploydaemon); err !=nil {
-//				deploydaemon.Status.Conditions.Message = fmt.Sprintf("Pod Sync Expose Failed: %s",err.Error())
-//				klog.Errorf("Pod Sync For DeployDaemon %s faild",deploydaemon.Name)
-//				// Here Need to Update DeployDamon Status
-//				return err
-//			}else {
-//				deploydaemon.Status.Conditions.Reason = "All Status Synced"
-//				deploydaemon.Status.Conditions.Status = true
-//				deploydaemon.Status.Conditions.Message = "Deployment success!"
-//			}
-//		}
-//	}
-//
-//	_, err :=c.extclientset.DeploycontrolV1alpha1().DeployDaemons(deploydaemon.Namespace).Update(deploydaemon)
-//
-//	return err
-//}
-
-//func (c *Controller ) updateDeployDaemonStatus(deploydaemon *v1alpha1.DeployDaemon, deployment *appsv1.Deployment) error{
-//
-//	 syncErr :=c.syncDeployDaemonStatus(deploydaemon, deployment)
-//
-//	 if syncErr != nil {
-//		 deploydaemon.Status.Conditions.Message = syncErr.Error()
-//
-//		 if err !=nil {
-//		 	klog.Errorf("Update DeployDaemon Status failed %s", err)
-//		 }
-//	 }
-//
-//	return syncErr
-//}
 
 func ( c *Controller ) createDeployent(deploydaemon *v1alpha1.DeployDaemon) (*appsv1.Deployment, error) {
 
