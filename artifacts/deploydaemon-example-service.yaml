@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: deploydaemon
+  labels:
+    component: deploydaemon
+  namespace: default
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      name: port80
+  selector:
+    app: demoqaauth-ts-app
+    expose: online

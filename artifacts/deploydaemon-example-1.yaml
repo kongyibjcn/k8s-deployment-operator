@@ -9,8 +9,8 @@ spec:
   component: ts-app
   image: nginx:latest
   version: 9.0.1.3
-  instance: 2
-  expose: offline
+  instance: 1
+  expose: online
   configRef: demoqaauth
   secrets:
     - paramName: VAULT_TOKEN

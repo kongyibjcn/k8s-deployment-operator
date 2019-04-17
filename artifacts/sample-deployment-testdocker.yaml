@@ -9,10 +9,8 @@ spec:
       # unlike pod-nginx.yaml, the name is not included in the meta data as a unique name is
       # generated from the deployment name
       labels:
-        app: nginx
+        app: testdocker
     spec:
       containers:
-      - name: nginx
-        image: nginx:latest
-
-
+        - name: testdocker
+          image: nginx:latest
