@@ -560,8 +560,8 @@ func (c *Controller ) makeDeployment(deploydaemon *v1alpha1.DeployDaemon) (*apps
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:  "nginx",
-							Image: "nginx:latest",
+							Name:  deploydaemon.Name,
+							Image: deploydaemon.Spec.Image,
 						},
 					},
 				},
