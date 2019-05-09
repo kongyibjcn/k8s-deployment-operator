@@ -1,8 +1,18 @@
-#! /bin/bash
+#!/bin/bash
 
 while true
 do
 
-echo $(curl http://192.168.99.100:30060)
+output=`curl http://192.168.99.100:30417 -s`
 
-end
+if [ "$output" = "Welcome to the Green Docker!" ];then
+
+   echo -e "\033[32m Welcome to the Green Docker! \033[0m"
+
+else
+   echo -e "\033[34m Welcome to the Blue Docker! \033[0m"
+fi
+
+sleep 2s
+
+done

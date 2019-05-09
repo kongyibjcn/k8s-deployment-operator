@@ -8,8 +8,8 @@ metadata:
 spec:
   type: NodePort
   ports:
-    - port: 80
-      name: port80
+    - port: 8081
+      name: port8081
   selector:
     app: demoqaauth-ts-app
     expose: online

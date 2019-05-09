@@ -1,18 +1,18 @@
 apiVersion: deploycontrol.k8s.io/v1alpha1
 kind: DeployDaemon
 metadata:
-  name: test-deploydaemon
+  name: test-deploydaemon-delay
 spec:
   tenant: demo
   environment: qa
   envtype: auth
-  component: ts-app
+  component: ts-app-delay
   image: kongyibj/greendocker:v1
   version: 9.0.1.2
+  scheduler: 1m
   instance: 1
-  expose: offline
+  expose: online
   configRef: demoqaauth
   secrets:
     - paramName: VAULT_TOKEN
       secretName: demoqaauth_vaulttoken
-

@@ -32,3 +32,44 @@ Make user the package path is src/k8s.io/code-generator/
 $ ./generate-groups.sh all "$ROOT_PACKAGE/pkg/client" "$ROOT_PACKAGE/pkg/apis" "$CUSTOM_RESOURCE_NAME:$CUSTOM_RESOURCE_VERSION"
 ```
 Will generate pkg/client pkg/apis and deepcopy code for each object
+
+
+//import (
+//	"encoding/json"
+//	"fmt"
+//	"io/ioutil"
+//	appsv1 "k8s.io/api/apps/v1"
+//)
+//
+//func main() {
+//	JsonParse := NewJsonStruct()
+//	deployment := appsv1.Deployment{}
+//	//下面使用的是相对路径，config.json文件和main.go文件处于同一目录下
+//	JsonParse.Load("./deployment.json", &deployment)
+//	fmt.Println("start output parsed deployment")
+//	fmt.Println(deployment.Spec.Template.Spec.SchedulerName)
+//	//fmt.Println(deployment.Spec.Replicas)
+//	//fmt.Println(deployment.Name)
+//}
+//
+//type JsonStruct struct {
+//}
+//
+//func NewJsonStruct() *JsonStruct {
+//	return &JsonStruct{}
+//}
+//
+//func (jst *JsonStruct) Load(filename string, v interface{}) {
+//	//ReadFile函数会读取文件的全部内容，并将结果以[]byte类型返回
+//	data, err := ioutil.ReadFile("/Users/kongyi/Workspace/GOlang/deploydaemon/src/github.com/kongyi-ibm/k8s-deployment-operator/deployment.json")
+//	fmt.Println(data)
+//	if err != nil {
+//		return
+//	}
+//
+//	//读取的数据为json格式，需要进行解码
+//	err = json.Unmarshal(data, v)
+//	if err != nil {
+//		return
+//	}
+//}

@@ -7,12 +7,11 @@ spec:
   environment: qa
   envtype: auth
   component: ts-app
-  image: nginx:latest
+  image: kongyibj/bluedocker:v1
   version: 9.0.1.3
-  instance: 1
+  instance: 4
   expose: online
   configRef: demoqaauth
   secrets:
     - paramName: VAULT_TOKEN
       secretName: demoqaauth_vaulttoken
-
