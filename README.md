@@ -73,3 +73,14 @@ Will generate pkg/client pkg/apis and deepcopy code for each object
 //		return
 //	}
 //}
+
+
+4. Dependence Management
+
+Vendor will under project will be the first directory for searching package.
+
+There have several tooling can support generate vendor:
+
+I suggest to use dep which is the official tool recommand by golang 
+
+Here is the link for how to use dep command:  https://golang.github.io/dep/docs/installation.html
